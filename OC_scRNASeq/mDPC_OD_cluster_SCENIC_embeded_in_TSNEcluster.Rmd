@@ -1,0 +1,335 @@
+---
+title: "SCENIC in mDPC OD cluster"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  tidy = TRUE,
+  tidy.opts = list(width.cutoff = 120),
+  message = FALSE,
+  warning = FALSE,
+  cache = TRUE #use the cached results without running again
+)
+```
+
+## referene note:
+We generated our scripts according to the official guidelines:
+https://rawcdn.githack.com/aertslab/SCENIC/6aed5ef0b0386a87982ba4cc7aa13db0444263a6/inst/doc/SCENIC_Running.html
+
+Some tips:
+https://rawcdn.githack.com/aertslab/SCENIC/66656c71f99000a67d3f25e8b811e18338ff8270/inst/doc/SCENIC_Setup.html#some-tips
+
+
+## Notes ahead:
+Note that some steps of this workflow can take considerable time. To avoid re-running these steps when knitting the vignette (i.e. create the HTML report), we have added eval=FALSE to some code chunks and load() its output in the next. Feel free to adapt these to your needs.
+
+# Prepare count matrix for SCENIC 
+## Create object
+Here we directly imported the Seurat object created before.
+```{r directly imported mDPC_GFP Seurat object}
+library(Seurat)
+setwd("/Users/liuhuan/R_local/mOC_SCENIC")
+mDPC_GFP_OD <- readRDS(file = "mDPC_GFP_OD_cluster_tsne_2021412.rds") # data for mOC_GFP+ cells 975 cells in total
+# We want to check the data structure
+mDPC_GFP_OD
+
+```
+
+```{r,extract the count matrix}
+exprMat  <-  as.matrix(mDPC_GFP_OD@assays$RNA@data)
+dim(exprMat)
+exprMat[1:4,1:4] 
+cellInfo <-  mDPC_GFP_OD@meta.data[,c(8,2,3)]
+colnames(cellInfo)=c('CellType', 'nGene' ,'nUMI')
+head(cellInfo)
+table(cellInfo$CellType)
+dim(cellInfo)
+save(exprMat, cellInfo,file = 'Mat_and_cell.Rdata')
+```
+
+
+
+# Prepare Species-specific RcisTarget database
+In addition to the R-packages, you will also need to download the species-specific databases for RcisTarget (the motif rankings). The links to all the available databases are available in the related website. By default, SCENIC uses the databases that score the motifs in the promoter of the genes (up to 500bp upstream the TSS), and in the 20kb around the TSS (+/-10kbp).
+With all the data downloaded from Baidu Pan "RcisTarget_database", we put related files in dbFiles folder loacally.
+
+```{r prepare RcisTarget database}
+dir.create("cisTarget_databases")
+setwd("cisTarget_databases") # where you put the "mm10__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr" and "mm10__refseq-r80__10kb_up_and_down_tss.mc9nr.feather"
+
+```
+
+
+# SCENIC analysis
+## Initialize SCENIC setup
+```{r, initialize SCENIC setup}
+library(SCENIC)
+org <- "mgi"  # need to change to mm10 accordingly
+dbDir <- "cisTarget_databases"
+myDatasetTitle <- "SCENIC analysis on mDPC GFP+ OD population" # Create a name for your analysis
+data(defaultDbNames)
+dbs <- defaultDbNames[[org]]
+scenicOptions <- initializeScenic(org=org, dbDir=dbDir, dbs=dbs, datasetTitle=myDatasetTitle, nCores=12) #it seems it does not recognize mm10 databases, so I can only use the default "cisTarget_databases/mm9-500bp-upstream-7species.mc9nr.feather - cisTarget_databases/mm9-tss-centered-10kb-7species.mc9nr.feather"
+
+#scenicOptions <- readRDS("int/scenicOptions.Rds")
+saveRDS(scenicOptions, file="int/scenicOptions.Rds") 
+
+```
+
+## Kick away the genes not recorded in ref database
+```{r trim the dataset, removing genes not recorded}
+library(RcisTarget)
+dbFilePath <- getDatabases(scenicOptions)[[1]]
+motifRankings <- importRankings(dbFilePath)
+genesInDatabase <- colnames(getRanking(motifRankings))
+genesLeft_minCells<-rownames(exprMat)
+length(genesLeft_minCells)
+genesLeft_minCells_inDatabases <- genesLeft_minCells[which(genesLeft_minCells %in% genesInDatabase)]
+length(genesLeft_minCells_inDatabases)
+genesKept <- genesLeft_minCells_inDatabases
+exprMat_filtered <- exprMat[genesKept, ]
+dim(exprMat_filtered)
+
+```
+
+## Normalization and scale
+```{r, normalization and scale}
+class(exprMat_filtered)
+runCorrelation(as.matrix(exprMat_filtered), scenicOptions)
+exprMat_filtered <- log2(exprMat_filtered+1)
+```
+
+## Running GENIE3
+Since GENIE3 is based on a Random Forest approach, each time it is run the results will be slightly different. The higher the number of trees used (ntrees), the lower the variability. We recommend to use set.seed to reproduce exact results in multiple runs.
+```{r, GENIE3}
+library(GENIE3)
+runGenie3(as.matrix(exprMat_filtered), scenicOptions, nParts = 20) 
+# we noted in the official guideliance, no as.matrix() function was mentioned, but this should be required, otherwise, the function did not work.
+# nParts =20 to save memory
+# This may take several hours
+save(exprMat_filtered,scenicOptions,file = "input_GENIE3_data.Rdata")
+getwd()
+```
+
+## GRN 
+Reboot R session and reload data
+```{r, reload data after rebooting}
+setwd("/Users/liuhuan/R_local/mOC_SCENIC")
+load('Mat_and_cell.Rdata')
+logMat <- log2(exprMat+1)
+dim(exprMat)
+```
+
+```{r GRN and score}
+library(doParallel) #Not quite sure what does this do.
+library(SCENIC)
+scenicOptions <- readRDS("int/scenicOptions.Rds")
+
+scenicOptions@settings$verbose <- TRUE
+scenicOptions@settings$nCores <- 1 # we may try 4 but it may or may not work due to version conflict among snow, doMC and SCENIC.
+scenicOptions@settings$seed <- 123
+
+scenicOptions@settings$dbs <- scenicOptions@settings$dbs["10kb"] # For a quick run
+
+
+scenicOptions <- runSCENIC_1_coexNetwork2modules(scenicOptions)
+
+scenicOptions <- runSCENIC_2_createRegulons(scenicOptions, coexMethod=c("top50perTarget")) #**only for toy run.
+
+scenicOptions <- runSCENIC_3_scoreCells(scenicOptions, as.matrix(logMat)) #we add as.matrix
+
+saveRDS(scenicOptions, file="int/scenicOptions.Rds") # To save status
+
+
+```
+
+
+
+```{r, GRN visualization, eval=FALSE}
+aucellApp <- plotTsne_AUCellApp(scenicOptions, logMat)
+savedSelections <- shiny::runApp(aucellApp)
+
+```
+
+```{r, Save the modified thresholds}
+# Save the modified thresholds:
+newThresholds <- savedSelections$thresholds
+scenicOptions@fileNames$int["aucell_thresholds",1] <- "int/newThresholds.Rds"
+saveRDS(newThresholds, file=getIntName(scenicOptions, "aucell_thresholds"))
+export2loom(scenicOptions, exprMat) # recommended method of export
+saveRDS(scenicOptions, file="int/scenicOptions.Rds") 
+```
+
+
+
+
+```{r, binary conversion}
+runSCENIC_4_aucell_binarize(scenicOptions)
+```
+
+
+
+In the shiny, we can visualizae regulon.
+All the regulon results were stored in the output folder
+
+Once you have optimize the thresholds, run to binarize the AUC, and generate some extra figures and clustering:
+```{r, save binary parameters}
+scenicOptions@settings$devType="png"
+scenicOptions <- runSCENIC_4_aucell_binarize(scenicOptions)
+```
+
+
+######Visualization using Seurat for publication ######
+```{r, visualization using Seurat}
+library(SCENIC)
+library(Seurat)
+setwd("/Users/liuhuan/R_local/mOC_SCENIC")
+mDPC_GFP_OD <- readRDS(file = "mDPC_GFP_OD_cluster_tsne_2021412.rds") # data for mOC_GFP+ cells 1959 cells in total
+##导入原始regulonAUC矩阵
+AUCmatrix <- readRDS("int/3.4_regulonAUC.Rds")
+AUCmatrix <- AUCmatrix@assays@data@listData$AUC
+AUCmatrix <- data.frame(t(AUCmatrix), check.names=F)
+RegulonName_AUC <- colnames(AUCmatrix)
+RegulonName_AUC <- gsub(' \\(','_',RegulonName_AUC)
+RegulonName_AUC <- gsub('\\)','',RegulonName_AUC)
+colnames(AUCmatrix) <- RegulonName_AUC
+mDPC_GFPauc <- AddMetaData(mDPC_GFP_OD, AUCmatrix)
+mDPC_GFPauc@assays$integrated <- NULL
+saveRDS(mDPC_GFPauc,file='mDPC_GFPauc_20210413.rds')
+
+##导入二进制regulonAUC矩阵
+BINmatrix <- readRDS("int/4.1_binaryRegulonActivity.Rds")
+BINmatrix <- data.frame(t(BINmatrix), check.names=F)
+RegulonName_BIN <- colnames(BINmatrix)
+RegulonName_BIN <- gsub(' \\(','_',RegulonName_BIN)
+RegulonName_BIN <- gsub('\\)','',RegulonName_BIN)
+colnames(BINmatrix) <- RegulonName_BIN
+mDPC_GFPbin <- AddMetaData(mDPC_GFP_OD, BINmatrix)
+mDPC_GFPbin@assays$integrated <- NULL
+saveRDS(mDPC_GFPbin, 'mDPC_GFPbin_20210413.rds')
+```
+
+```{r, visulaize AUC}
+##利用Seurat可视化AUC
+dir.create('scenic_seurat')
+#FeaturePlot
+library(ggplot2)
+```
+
+```{r, visual 1}
+library(SCENIC)
+library(Seurat)
+library(tidyverse)
+setwd("/Users/liuhuan/R_local/mOC_SCENIC")
+mDPC_GFPbin <- readRDS("mDPC_GFPbin_20210413.rds")
+mDPC_GFPauc <- readRDS("mDPC_GFPauc_20210413.rds")
+mDPC_GFP_OD <- readRDS(file = "mDPC_GFP_OD_cluster_tsne_2021412.rds") # data for mOC_GFP+ cells 1959 cells in total
+```
+
+```{r, feature plot for different motifs of interest}
+p1 = FeaturePlot(mDPC_GFPauc, features='Atf3_extended_113g', pt.size = 0.3,label=T, reduction = 'tsne')
+p2 = FeaturePlot(mDPC_GFPbin, features='Atf3_extended_113g', pt.size = 0.3,label=T, reduction = 'tsne')
+p3 = DimPlot(mDPC_GFP_OD, reduction = 'tsne', group.by = "seurat_clusters", pt.size = 0.3,label=T)
+p4 = FeaturePlot(mDPC_GFP_OD, features = c("Dmp1", "Atf5", "Atf3"), ncol=3, pt.size = 0.3,reduction = "tsne")
+plotc = p1|p2|p3
+ggsave('scenic_seurat/ATF3_extended_113g.pdf', plotc, width=13 ,height=4)
+ggsave('scenic_seurat/ATF3_extended_113g_ATF5_Dmp1.pdf', p4, width=12 ,height=4)
+
+p6 = FeaturePlot(mDPC_GFPauc, features='Creb3l1_extended_1660g', pt.size = 0.3,label=T, reduction = 'tsne')
+p7 = FeaturePlot(mDPC_GFPbin, features='Creb3l1_1346g', pt.size = 0.3,label=T, reduction = 'tsne')
+p8 = DimPlot(mDPC_GFP_OD, reduction = 'tsne', group.by = "seurat_clusters", pt.size = 0.3,label=T)
+
+plotc = p6|p7|p8
+ggsave('scenic_seurat/Creb3l1_extended_1660g.pdf', plotc, width=13 ,height=4)
+
+
+```
+
+```{r, klf5}
+p1 = FeaturePlot(mDPC_GFPauc, features='Klf5_extended_178g', pt.size = 0.3,label=T, reduction = 'tsne')
+p2 = FeaturePlot(mDPC_GFPbin, features='Klf5_103g', pt.size = 0.3,label=T, reduction = 'tsne')
+p3 = DimPlot(mDPC_GFP_OD, reduction = 'tsne', group.by = "seurat_clusters", pt.size = 0.3,label=T)
+plotc = p1|p2|p3
+ggsave('scenic_seurat/Klf4_extended_113g.pdf', plotc, width=13 ,height=4)
+```
+```{r, zeb1}
+p1 = FeaturePlot(mDPC_GFPauc, features='Zeb1_60g', pt.size = 0.3,label=T, reduction = 'tsne')
+p2 = FeaturePlot(mDPC_GFPbin, features='Zeb1_60g', pt.size = 0.3,label=T, reduction = 'tsne')
+p3 = DimPlot(mDPC_GFP_OD, reduction = 'tsne', group.by = "seurat_clusters", pt.size = 0.3,label=T)
+plotc = p1|p2|p3
+ggsave('scenic_seurat/Zeb1_60g.pdf', plotc, width=13 ,height=4)
+```
+
+```{r, twist1}
+p1 = FeaturePlot(mDPC_GFPauc, features='Twist1_259g', pt.size = 0.3,label=T, reduction = 'tsne')
+p2 = FeaturePlot(mDPC_GFPbin, features='Twist1_259g', pt.size = 0.3,label=T, reduction = 'tsne')
+p3 = DimPlot(mDPC_GFP_OD, reduction = 'tsne', group.by = "seurat_clusters", pt.size = 0.3,label=T)
+plotc = p1|p2|p3
+ggsave('scenic_seurat/Twist1_259g.pdf', plotc, width=13 ,height=4)
+```
+## export clustering of regulons
+# prepare
+```{r, regulon clustering, prepare}
+library(SCENIC)
+library(Seurat)
+library(tidyverse)
+setwd("/Users/liuhuan/R_local/mOC_SCENIC")
+mDPC_GFPbin <- readRDS("mDPC_GFPbin_20210413.rds")
+mDPC_GFPauc <- readRDS("mDPC_GFPauc_20210413.rds")
+
+```
+
+```{r, extract cluster and bin info}
+df <- mDPC_GFPbin@meta.data
+
+df_bin <- select(df, -c(1:7))
+saveRDS(df_bin, "mDPC_GFPbin_cluster_20210421.rds")
+```
+
+```{r,generate clustering heatmap}
+library(ComplexHeatmap)
+df <- t(df_bin)
+colnames(df)<- df[1,]
+df<- df[-1,]
+df <- df[ , colSums(is.na(df)) < nrow(df)] 
+pheatmap(df)
+
+```
+
+```{r, regulon activity by cell type}
+# Note the "celltype" is just the seurat cluster
+library(AUCell)
+scenicOptions <- readRDS("./int/scenicOptions.rds")
+regulonAUC <- loadInt(scenicOptions, "aucell_regulonAUC")
+regulonAUC <- regulonAUC[onlyNonDuplicatedExtended(rownames(regulonAUC)),]
+regulonActivity_byCellType <- sapply(split(rownames(cellInfo), cellInfo$CellType),
+                                     function(cells) rowMeans(getAUC(regulonAUC)[,cells]))
+regulonActivity_byCellType_Scaled <- t(scale(t(regulonActivity_byCellType), center = T, scale=T))
+heatmap_activity<- pheatmap::pheatmap(regulonActivity_byCellType_Scaled, #fontsize_row=3,
+                   color=colorRampPalette(c("#09CF5B","white","#F2E725"))(100), breaks=seq(-3, 3, length.out = 100),
+                   treeheight_row=10, treeheight_col=10, border_color=NA)
+ggsave("heatmap_activity.pdf",heatmap_activity, width = 12, height=40)
+
+topRegulators <- reshape2::melt(regulonActivity_byCellType_Scaled)
+colnames(topRegulators) <- c("Regulon", "CellType", "RelativeActivity")
+topRegulators <- topRegulators[which(topRegulators$RelativeActivity>0),]
+viewTable(topRegulators)
+
+minPerc <- .7
+binaryRegulonActivity <- loadInt(scenicOptions, "aucell_binary_nonDupl")
+cellInfo_binarizedCells <- cellInfo[which(rownames(cellInfo)%in% colnames(binaryRegulonActivity)),, drop=FALSE]
+regulonActivity_byCellType_Binarized <- sapply(split(rownames(cellInfo_binarizedCells), cellInfo_binarizedCells$CellType),
+                                               function(cells) rowMeans(binaryRegulonActivity[,cells, drop=FALSE]))
+binaryActPerc_subset <- regulonActivity_byCellType_Binarized[which(rowSums(regulonActivity_byCellType_Binarized>minPerc)>0),]
+heatmap_binary <- pheatmap::pheatmap(binaryActPerc_subset, # fontsize_row=5,
+                   color = colorRampPalette(c("white","pink","red"))(100), breaks=seq(0, 1, length.out = 100),
+                   treeheight_row=10, treeheight_col=10, border_color=NA,
+                   cluster_cols = FALSE)
+
+ggsave("heatmap_binary.pdf", heatmap_binary, width=12, height=15)
+```
+
+
+
+
