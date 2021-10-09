@@ -1,0 +1,535 @@
+---
+title: "mOC scRNASeq GFP threshold 1"
+author: "Huan"
+date: "1/17/2021"
+output:
+  html_document:
+    theme: united
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  tidy = TRUE,
+  tidy.opts = list(width.cutoff = 120),
+  message = FALSE,
+  warning = FALSE,
+  cache = TRUE
+)
+```
+
+This note was used for single cell RNA-seq analysis from OC+ lineage isolaged from mouse PN0 lower molar tooth germ.
+
+
+# Setup of analysis environment
+## Package installation 
+Seurat (v3), ggplot2 and sctransform packages were installed.
+
+## Load environment and packages
+```{r load of packages and setup of the environment}
+library(Seurat)
+library(ggplot2)
+library(sctransform)
+
+set.seed(12)
+theme_set(theme_bw())
+
+
+setwd("/Users/liuhuan/R_local/mOC_ScRNASeq")
+
+```
+
+# Load data and create Seurat object
+```{r, load 10X datasets}
+mDPC_data <- Read10X(data.dir = "./GFP-add/")
+
+mDPC <- CreateSeuratObject(counts = mDPC_data, project = "mDPC", min.cells = 3, min.features = 200)
+"EGFP" %in% mDPC@assays[["RNA"]]@counts@Dimnames[[1]]
+mDPC
+```
+FeaturePlot(pbmc, features = c("GFP"))
+
+# Initial analysis
+```{r filter GFP positive cells}
+
+mDPC_GFP <- subset(x=mDPC, subset = EGFP>=1)
+mDPC_GFP
+```
+Initial analysis was performed using SCTransform
+```{r initial analysis with SCTransform}
+# store mitochondrial percentage in object meta data
+mDPC_GFP <- PercentageFeatureSet(mDPC_GFP, pattern = "^Mt-", col.name = "percent.mt")
+
+# run sctransform
+mDPC_GFP <- SCTransform(mDPC_GFP, vars.to.regress = "percent.mt", verbose = FALSE)
+```
+
+
+We then perform cluster ing using UMAP
+```{r cluster and dimension-reduction}
+# These are now standard steps in the Seurat workflow for visualization and clustering
+mDPC_GFP <- RunPCA(mDPC_GFP, verbose = FALSE)
+mDPC_GFP <- RunUMAP(mDPC_GFP, dims = 1:30, verbose = FALSE)
+
+mDPC_GFP <- FindNeighbors(mDPC_GFP, dims = 1:30, verbose = FALSE)
+mDPC_GFP <- FindClusters(mDPC_GFP, verbose = FALSE)
+DimPlot(mDPC_GFP, label = TRUE)
+
+```
+
+
+We then want to check expression of specific genes in different clusters.
+
+```{r, vlnplot, fig.height=20, fig.width=9}
+VlnPlot(mDPC_GFP, features = c("Dlx5", "Dlx3", "Runx2", "Bglap", "Klf4", "Sall1", "Dspp", "Dmp1", "Zeb1", "Prom1", "Cd34", "EGFP"), 
+    pt.size = 0.2, ncol =2)
+```
+
+```{r, feature plots for specific genes, fig.height=15, fig.width=9}
+FeaturePlot(mDPC_GFP, features = c("Dlx5", "Dlx3", "Runx2", "Bglap", "Klf4", "Sall1", "Dspp", "Dmp1","Zeb1", "Prom1", "Cd34", "EGFP"), ncol=2, pt.size = 0.3)
+
+```
+
+```{r marker genes}
+mDPC_GFP_1.markers <- FindAllMarkers(object = mDPC_GFP, only.pos = TRUE, 
+                               min.pct = 0.25, thresh.use = 0.25)
+mDPC_GFP_1.markers.sorted <- mDPC_GFP_1.markers %>% group_by(cluster) %>% top_n(2, avg_logFC)
+write.csv(mDPC_GFP_1.markers, file = "mDPC_scRNASeq_GFP_1_markers.csv", row.names = FALSE)
+write.csv(mDPC_GFP_1.markers.sorted, file = "mDPC_scRNASeq_GFP_1_markers_top.csv", row.names = FALSE)
+```
+# Pause and save RDS
+
+```{r,feature plots for specific genes, fig.height=15, fig.width=9}
+library(Seurat)
+library(ggplot2)
+library(sctransform)
+
+set.seed(12)
+theme_set(theme_bw())
+
+
+setwd("/Users/liuhuan/R_local/mOC_ScRNASeq")
+
+mDPC_GFP <- readRDS('mDPC_GFP_20210120.rds')
+pdf(file = "OC_cluster_umap_expression.pdf")
+FeaturePlot(mDPC_GFP, features = c("Atf2", "Atf3", "Atf4", "Bglap", "Klf4", "Atf5", "Dspp", "Dmp1","Zeb1", "Prom1", "Cd34", "EGFP"), ncol=2, pt.size = 0.3)
+dev.off()
+
+```
+
+save as "mDPC_GFP_20210120.rds"
+
+# Subset Odontoblast lineage (potential) based on neighborhood with DSPP+ cluster
+
+```{r, subset odontoblast lineage}
+mDPC_GFP_OD <- subset(mDPC_GFP, ident = c(0,2,3,6,10))
+DimPlot(mDPC_GFP_OD, label = TRUE) # saveRDS(mDPC_GFP_OD, file = "mDPC_GFP_OD_20210207.rds")
+
+```
+## Recluster again for mDPC_GFP_OD cells
+
+```{r, reclustering,fig.height=8, fig.width=9}
+getwd()
+mDPC_GFP_OD<- readRDS("mDPC_GFP_OD_20210207.rds")
+library(tidyverse)
+c(2,seq(from=3,by=3,length=10) )
+map(c(2,seq(from=3,by=3,length=10) ) , function(x) { mDPC_GFP_OD %>%  RunTSNE(n.neighbors = 50,n.epochs=105,dims = 1:x) %>% DimPlot()}) %>% cowplot::plot_grid(plotlist = .) # dims= 1:21 works best
+
+
+```
+
+```{r, clustering again,fig.height=15, fig.width=9}
+mDPC_GFP_OD_cluster <- RunTSNE(mDPC_GFP_OD, n.neighbors = 50,n.epochs=105,dims = 1:50)
+
+TSNEPlot(mDPC_GFP_OD_cluster)
+mDPC_GFP_OD_cluster <- FindNeighbors(mDPC_GFP_OD_cluster, dims = 1:30, verbose = FALSE)
+mDPC_GFP_OD_cluster <- FindClusters(mDPC_GFP_OD_cluster, verbose = FALSE)
+DimPlot(mDPC_GFP_OD_cluster, label = TRUE)
+
+
+DimPlot(mDPC_GFP_OD_cluster, reduction = "tsne")
+
+# saved as mDPC_GFP_OD_cluster_20210208.rds
+saveRDS(mDPC_GFP_OD_cluster, file = "mDPC_GFP_OD_cluster_tsne_2021412.rds")
+```
+## Figure output for publication
+
+
+```{r, prepare}
+setwd("/Users/liuhuan/R_local/mOC_ScRNASeq")
+mDPC_GFP_OD_cluster <- readRDS("mDPC_GFP_OD_cluster_tsne_2021412.rds")
+library(Seurat)
+library(ggplot2)
+library(sctransform)
+
+set.seed(12)
+theme_set(theme_bw())
+
+```
+
+
+
+## renaming cluster 
+
+```{r, renaming}
+#https://github.com/satijalab/seurat/issues/771
+# or refer to https://github.com/satijalab/seurat/issues/1589
+# mylevel <- c(2,1,6,3,4,5)
+# mDPC_GFP_OD_cluster@active.ident <- factor(x = mDPC_GFP_OD_cluster@active.ident, levels = mylevel) ## Don't use this as this will cause unexpected error in DotPlot
+mDPC_GFP_OD_cluster <- RenameIdents(object = mDPC_GFP_OD_cluster,  '0' = '2', '1' = '1', '2' = '6','3' = '3','4' = '4','5' = '5')
+levels(mDPC_GFP_OD_cluster)
+levels(mDPC_GFP_OD_cluster) <- c("1","2","3", "4","5","6")
+levels(mDPC_GFP_OD_cluster)
+
+```
+
+
+```{r, plot for cluster}
+mDPC_GFP_OD_cluster_tsne<-DimPlot(mDPC_GFP_OD_cluster, reduction = "tsne", pt.size = 1)
+ggsave("mDPC_GFP_OD_cluster_tsne.pdf", mDPC_GFP_OD_cluster_tsne, height=10, width = 10)
+
+```
+
+```{r, figure output for genes}
+
+runx2_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Runx2"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("runx2_tsne.pdf", runx2_plot, height=10, width = 10)
+
+dmp1_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Dmp1"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("dmp1_tsne.pdf", dmp1_plot, height=10, width = 10)
+
+osr2_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Osr2"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("osr2_tsne.pdf",osr2_plot, height=10, width = 10)
+
+osx_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Sp7"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("Sp7_tsne.pdf",osx_plot, height=10, width = 10)
+
+bmp3_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Bmp3"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("bmp3_tsne.pdf",bmp3_plot, height=10, width = 10)
+
+Slc20a2_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Slc20a2"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("Slc20a2_tsne.pdf",Slc20a2_plot, height=10, width = 10)
+
+Nfic_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Nfic"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("Nfic_plot.pdf",Nfic_plot, height=10, width = 10)
+
+Nes_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Nes"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("Nes_plot.pdf",Nes_plot, height=10, width = 10)
+
+Dspp_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Dspp"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("Dspp_plot.pdf",Dspp_plot, height=10, width = 10)
+
+
+Notum_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Notum"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("Notum_plot.pdf",Notum_plot, height=10, width = 10)
+
+
+Mmp13_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Mmp13"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("Mmp13_plot.pdf",Mmp13_plot, height=10, width = 10)
+
+
+Wnt5a_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Wnt5a"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("Wnt5a_plot.pdf",Wnt5a_plot, height=10, width = 10)
+
+
+Bmp7_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Bmp7"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("Bmp7_plot.pdf",Bmp7_plot, height=10, width = 10)
+
+Msx2_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Msx2"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("Msx2_plot.pdf",Msx2_plot, height=10, width = 10)
+
+Igfbp5_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Igfbp5"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("Igfbp5_plot.pdf",Igfbp5_plot, height=10, width = 10)
+
+Dlx5_plot <- FeaturePlot(mDPC_GFP_OD_cluster, features = c("Dlx5"), ncol=1, pt.size = 0.5,reduction = "tsne")
+ggsave("Dlx5_plot.pdf",Dlx5_plot, height=10, width = 10)
+FeaturePlot(mDPC_GFP_OD_cluster, features = c("Cux1"), ncol=1, pt.size = 0.5,reduction = "tsne")
+```
+
+
+
+
+
+
+
+```{r, dotplot}
+DefaultAssay(mDPC_GFP_OD_cluster) <- c("SCT")
+genes_to_check <-c("Osr2","Slc20a2","Msx2","Klf4", "Nfic", "Bmp7","Nes","Sp7","Dmp1", "Dspp","Igfbp5","Notum", "Runx2","Mmp13","Wnt5a")
+dot_1<- DotPlot(object = mDPC_GFP_OD_cluster, idents = c(1,2,3,4,5,6),features =genes_to_check)
+ggsave("dot_1_3.pdf",dot_1, height=5, width = 12)
+
+```
+
+```{r, violin plot for specific TFs in Figure 3}
+
+VlnPlot(object = mDPC_GFP_OD_cluster, idents = c(1,5), features = c('Atf5','Atf4','Xbp1','Creb3l1','Creb3l2','Sall1','Zeb1','Runx2',"Cux1"), group.by = "seurat_clusters")
+```
+
+## Find marker genes for new cluster and heatmap plot
+```{r, find marker genes}
+library("tidyverse")
+library("Seurat")
+library("ComplexHeatmap")
+library("Matrix")
+setwd("/Users/liuhuan/R_local/mOC_ScRNASeq")
+mDPC_GFP_OD_cluster <- readRDS("mDPC_GFP_OD_cluster_tsne_2021412.rds")
+mDPC_GFP_OD_cluster <- RenameIdents(object = mDPC_GFP_OD_cluster,  '0' = '2', '1' = '1', '2' = '6','3' = '3','4' = '4','5' = '5')
+levels(mDPC_GFP_OD_cluster)
+levels(mDPC_GFP_OD_cluster) <- c("1","2","3", "4","5","6")
+levels(mDPC_GFP_OD_cluster)
+
+mDPC_GFP_OD_cluster.markers <- FindAllMarkers(object = mDPC_GFP_OD_cluster, only.pos = TRUE, 
+                               min.pct = 0.25, thresh.use = 0.25)
+top10 <- mDPC_GFP_OD_cluster.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+
+mDPC_GFP_OD_cluster.markers.sorted <- mDPC_GFP_OD_cluster.markers %>% group_by(cluster) %>% top_n(2, avg_log2FC)
+DoHeatmap(mDPC_GFP_OD_cluster, features = top10$gene)
+ggsave("marker_genes_heatmap_2.pdf", device = "pdf", width = 23, height = 16, units = "cm")
+```
+
+
+
+
+```{r, write results}
+ write.csv(mDPC_GFP_OD_cluster.markers, file = "mDPC_GFP_OD_cluster_markers_0505.csv", row.names = FALSE)
+ write.csv(mDPC_GFP_OD_cluster.markers.sorted, file = "mDPC_GFP_OD_cluster_markers_top_0505.csv", row.names = FALSE)
+ write.csv(top10, file = "mDPC_GFP_OD_cluster_markers_top10_20210505.csv", row.names = FALSE)
+
+```
+
+
+
+
+# Monocle3 analysis for pseudotime analysis
+```{r, load required packages and environment}
+
+library(Seurat)
+
+library(ggplot2)
+
+library(monocle3)
+
+
+
+set.seed(12)
+theme_set(theme_bw())
+setwd("/Users/liuhuan/R_local/mOC_ScRNASeq")
+```
+
+#Prepare data from Seurat to Monocle3
+
+### Check the content of object mDPC_GFP_OD_cluster
+
+```{r check structure of object mDPC_GFP_OD_cluster, fig.height=20, fig.width=9}
+library(mindr)
+(out <- capture.output(str(mDPC_GFP_OD_cluster)))
+out2 <- paste(out, collapse="\n")
+mm(gsub("\\.\\.@","# ",gsub("\\.\\. ","#",out2)),type ="text")
+```
+### Prepare data from Seurat object to Monocle3
+```{r, prepare data from Seurat to Monocle3}
+
+DefaultAssay(mDPC_GFP_OD_cluster) # SCT
+# part one, gene annotations
+
+gene_annotation <- as.data.frame(rownames(mDPC_GFP_OD_cluster@reductions[["pca"]]@feature.loadings), row.names = rownames(mDPC_GFP_OD_cluster@reductions[["pca"]]@feature.loadings))
+colnames(gene_annotation) <- "gene_short_name"
+
+# part two, cell information
+
+cell_metadata <- as.data.frame(mDPC_GFP_OD_cluster@assays[["SCT"]]@counts@Dimnames[[2]], row.names = mDPC_GFP_OD_cluster@assays[["SCT"]]@counts@Dimnames[[2]])
+colnames(cell_metadata) <- "barcode"
+
+# part three, counts sparse matrix
+
+New_matrix <- mDPC_GFP_OD_cluster@assays[["SCT"]]@counts
+New_matrix <- New_matrix[rownames(mDPC_GFP_OD_cluster@reductions[["pca"]]@feature.loadings), ]
+expression_matrix <- New_matrix
+
+### Construct the basic cds object
+
+cds_from_seurat <- new_cell_data_set(expression_matrix,
+                                     cell_metadata = cell_metadata,
+                                     gene_metadata = gene_annotation)
+
+
+```
+
+
+### import the tsne info from Seurat to Monocle3
+```{r, import tsne info from Seurat to Monocle3,fig.height=10, fig.width=9}
+### Construct and assign the made up partition
+
+recreate.partition <- c(rep(1, length(cds_from_seurat@colData@rownames)))
+names(recreate.partition) <- cds_from_seurat@colData@rownames
+recreate.partition <- as.factor(recreate.partition)
+
+cds_from_seurat@clusters@listData[["tSNE"]][["partitions"]] <- recreate.partition
+
+
+### Assign the cluster info generated from Seurat
+
+list_cluster <- mDPC_GFP_OD_cluster@meta.data$seurat_clusters  #modified
+names(list_cluster) <- mDPC_GFP_OD_cluster@assays[["SCT"]]@data@Dimnames[[2]]
+
+cds_from_seurat@clusters@listData[["tSNE"]][["clusters"]] <- list_cluster
+
+
+### Could be a space-holder, but essentially fills out louvain parameters
+
+cds_from_seurat@clusters@listData[["tSNE"]][["louvain_res"]] <- "NA"
+
+
+### Assign UMAP coordinate
+
+#cds_from_seurat@reducedDims@listData[["tSNE"]] <-mDPC_GFP_OD_cluster@meta.data$seurat_clusters@reductions[["umap"]]@cell.embeddings #maybe not working
+cds_from_seurat@int_colData@listData[["reducedDims"]][["tSNE"]] <- mDPC_GFP_OD_cluster@reductions[["tsne"]]@cell.embeddings
+
+
+### Assign feature loading for downstream module analysis
+
+cds_from_seurat@preprocess_aux$gene_loadings <- mDPC_GFP_OD_cluster@reductions[["pca"]]@feature.loadings
+
+plot_cells(cds_from_seurat,label_groups_by_cluster=FALSE,color_cells_by = "cluster", cell_size  =1, reduction_method = "tSNE") # Test tSNE substitute, and you may face a warning "No trajectory to plot. Has learn_graph() been called yet, which will be done as shown below.
+
+```
+
+```{r, Pseudotime trajectory,fig.height=3, fig.width=3}
+
+cds_from_seurat <- learn_graph(cds_from_seurat, use_partition = T)
+plot_cells(cds_from_seurat,trajectory_graph_segment_size = 0.3,label_groups_by_cluster=FALSE,color_cells_by = "cluster", cell_size  =1, reduction_method = "tSNE") 
+
+```
+```{r, pseudotime trajectory plot,fig.height=10, fig.width=9 }
+plot_cells(cds_from_seurat,color_cells_by = "cluster",label_groups_by_cluster=FALSE,label_leaves=TRUE,label_branch_points=TRUE, cell_size  =1, reduction_method = "tSNE")
+plot_cells(cds_from_seurat,color_cells_by = "cluster",label_groups_by_cluster=TRUE,label_leaves=FALSE,label_branch_points=FALSE, cell_size  =1, reduction_method = "tSNE")
+plot_cells(cds_from_seurat,color_cells_by = "cluster",label_groups_by_cluster=FALSE,label_leaves=TRUE,label_branch_points=FALSE, cell_size  =1, reduction_method = "tSNE")
+saveRDS(cds_from_seurat, file = "mDPC_GFP_OD_cluster_m3_TJ_20210413.rds")
+
+
+```
+
+
+```{r, pseudotime trajectory plot for specific genes,fig.height=3, fig.width=3 }
+plot_cells(cds_from_seurat, genes=c("Dspp"),  trajectory_graph_segment_size = 0.3,label_groups_by_cluster=FALSE,label_cell_groups = FALSE,show_trajectory_graph=TRUE,label_leaves=TRUE, reduction_method = "tSNE")
+# plot_cells(cds_from_seurat, genes=c("Atf2"),label_groups_by_cluster=FALSE,label_cell_groups = FALSE,show_trajectory_graph=TRUE,label_leaves=TRUE)
+
+plot_cells(cds_from_seurat, genes=c("Atf3"), trajectory_graph_segment_size = 0.3,label_groups_by_cluster=FALSE,label_cell_groups = FALSE,show_trajectory_graph=TRUE,label_leaves=TRUE, reduction_method = "tSNE")
+# plot_cells(cds_from_seurat, genes=c("Atf4"), trajectory_graph_segment_size = 0.3,label_groups_by_cluster=FALSE,label_cell_groups = FALSE,show_trajectory_graph=TRUE,label_leaves=TRUE)
+plot_cells(cds_from_seurat, genes=c("Atf5"), trajectory_graph_segment_size = 0.3,label_groups_by_cluster=FALSE,label_cell_groups = FALSE,show_trajectory_graph=TRUE,label_leaves=TRUE, reduction_method = "tSNE")
+plot_cells(cds_from_seurat, genes=c("Sall1"), trajectory_graph_segment_size = 0.3,label_groups_by_cluster=FALSE,label_cell_groups = FALSE,show_trajectory_graph=TRUE,label_leaves=TRUE, reduction_method = "tSNE")
+plot_cells(cds_from_seurat, genes=c("Klf4"), trajectory_graph_segment_size = 0.3,label_groups_by_cluster=FALSE,label_cell_groups = FALSE,show_trajectory_graph=TRUE,label_leaves=TRUE, reduction_method = "tSNE")
+plot_cells(cds_from_seurat, genes=c("Bglap"), trajectory_graph_segment_size = 0.3,label_groups_by_cluster=FALSE,label_cell_groups = FALSE,show_trajectory_graph=TRUE,label_leaves=TRUE, reduction_method = "tSNE")
+plot_cells(cds_from_seurat, genes=c("Creb3l1"), trajectory_graph_segment_size = 0.3,label_groups_by_cluster=FALSE,label_cell_groups = FALSE,show_trajectory_graph=TRUE,label_leaves=TRUE, reduction_method = "tSNE")
+
+plot_cells(cds_from_seurat, genes=c("Dlx2"), trajectory_graph_segment_size = 0.3,label_groups_by_cluster=FALSE,label_cell_groups = FALSE,show_trajectory_graph=TRUE,label_leaves=TRUE, reduction_method = "tSNE")
+plot_cells(cds_from_seurat, genes=c("Wnt5a"), trajectory_graph_segment_size = 0.3,label_groups_by_cluster=FALSE,label_cell_groups = FALSE,show_trajectory_graph=TRUE,label_leaves=TRUE, reduction_method = "tSNE")
+plot_cells(cds_from_seurat, genes=c("Runx2"), trajectory_graph_segment_size = 0.3,label_groups_by_cluster=FALSE,label_cell_groups = FALSE,show_trajectory_graph=TRUE,label_leaves=TRUE, reduction_method = "tSNE")
+
+```
+
+
+```{r, order cells}
+test1 <- order_cells(cds_from_seurat, reduction_method = "UMAP")
+test2 <- order_cells(cds_from_seurat, reduction_method = "UMAP")
+test3 <- order_cells(cds_from_seurat, reduction_method = "UMAP")
+
+```
+
+
+```{r, assigning pseudotime grids}
+plot_cells(
+  cds = test1,
+  color_cells_by = "pseudotime",
+  show_trajectory_graph = TRUE
+)
+
+plot_cells(
+  cds = test2,
+  color_cells_by = "pseudotime",
+  show_trajectory_graph = TRUE
+)
+plot_cells(
+  cds = test3,
+  color_cells_by = "pseudotime",
+  show_trajectory_graph = TRUE
+)
+
+```
+
+
+
+
+We then integrate monocle3 pseudotime into Seurat
+
+```{r, subject pseudotime data to Seurat}
+mDPC_GFP_OD_cluster <- AddMetaData(
+  object = mDPC_GFP_OD_cluster,
+  metadata = test1@principal_graph_aux@listData$UMAP$pseudotime,
+  col.name = "test1"
+)
+
+mDPC_GFP_OD_cluster <- AddMetaData(
+  object = mDPC_GFP_OD_cluster,
+  metadata = test2@principal_graph_aux@listData$UMAP$pseudotime,
+  col.name = "test2"
+)
+
+mDPC_GFP_OD_cluster <- AddMetaData(
+  object = mDPC_GFP_OD_cluster,
+  metadata = test3@principal_graph_aux@listData$UMAP$pseudotime,
+  col.name = "test3"
+)
+```
+
+```{r, export pseudotime}
+
+p1 <- FeaturePlot(mDPC_GFP_OD_cluster, c("test1", "test2"), pt.size = 0.1,reduction = "tsne") & scale_color_viridis_c()
+ggsave('pseudotime.pdf', p1, width=14 ,height=4)
+```
+
+
+
+
+
+
+
+
+
+
+=============not run =====================
+save data # save as mDPC_GFP_OD_cluster_m3_TJ_20210208.rds
+
+```{r, renaming cluster}
+
+pData(cds_from_seurat)$cell_type2 <- plyr::revalue(as.character(pData(cds_from_seurat)$cluster),
+                                        c("0" = '1',
+                                        "1" = '2',
+                                        "2" = '3',
+                                        "3" = '4',
+                                        "4" = '5',
+                                        "5" = '6))
+cell_type_color <- c("1" = "#E088B8",
+                    "2" = "#46C7EF",
+                    "3" = "#EFAD1E",
+                    "4" = "#8CB3DF",
+                    "5" = "#53C0AD")
+```
+
+######Test of pseudotime plot ####
+```{r, prepare root finding function}
+# a helper function to identify the root principal points:
+get_correct_root_state <- function(cds, cell_phenotype, root_type){
+  cell_ids <- which(pData(cds)[, cell_phenotype] == root_type)
+
+  closest_vertex <-
+    cds@auxOrderingData[[cds@rge_method]]$pr_graph_cell_proj_closest_vertex
+  closest_vertex <- as.matrix(closest_vertex[colnames(cds), ])
+  root_pr_nodes <-
+    V(cds@minSpanningTree)$name[as.numeric(names
+      (which.max(table(closest_vertex[cell_ids,]))))]
+
+  root_pr_nodes
+}
+```
+
